@@ -1,0 +1,128 @@
+# .github/workflows/security-test.yml - Automatyczne testy w GitHub Actions
+
+```yaml
+name: 🔐 LLM Security Tests
+
+on:
+  push:
+    branches: [ main, develop ]
+  pull_request:
+    branches: [ main ]
+  schedule:
+    # Uruchom testy codziennie o 6:00 UTC
+    - cron: '0 6 * * *'
+
+jobs:
+  security-test:
+    runs-on: ubuntu-latest
+    
+    strategy:
+      matrix:
+        python-version: ['3.8', '3.9', '3.10', '3.11']
+        model: ['gemma3', 'mistral']
+    
+    steps:
+    - uses: actions/checkout@v3
+    
+    - name: Setup Python ${{ matrix.python-version }}
+      uses: actions/setup-python@v4
+      with:
+        python-version: ${{ matrix.python-version }}
+    
+    - name: Install Ollama
+      run: |
+        curl https://ollama.ai/install.sh | sh
+        ollama pull ${{ matrix.model }}
+    
+    - name: Install dependencies
+      run: |
+        python -m pip install --upgrade pip
+        pip install -r requirements.txt
+    
+    - name: Run security tests
+      run: |
+        python main.py ${{ matrix.model }}
+        
+        # Jeśli test nie znalazł alertów, warning
+        if [ ! -s outputs/llm_security_tests.csv ]; then
+          echo "⚠️ Warning: Brak wyników testów"
+          exit 1
+        fi
+    
+    - name: Generate report
+      if: always()
+      run: |
+        python -c "
+        import json
+        with open('outputs/llm_security_tests.json') as f:
+            data = json.load(f)
+        print(f\"Total Tests: {data['meta']['total_tests']}\")
+        print(f\"Total Alerts: {data['meta']['total_alerts']}\")
+        "
+    
+    - name: Upload results
+      if: always()
+      uses: actions/upload-artifact@v3
+      with:
+        name: test-results-${{ matrix.model }}-py${{ matrix.python-version }}
+        path: outputs/
+        retention-days: 30
+    
+    - name: Comment PR with results
+      if: github.event_name == 'pull_request'
+      uses: actions/github-script@v6
+      with:
+        script: |
+          const fs = require('fs');
+          const data = JSON.parse(fs.readFileSync('outputs/llm_security_tests.json', 'utf8'));
+          const comment = `## 🔐 LLM Security Test Results\n\n` +
+            `- **Model**: ${{ matrix.model }}\n` +
+            `- **Total Tests**: ${data.meta.total_tests}\n` +
+            `- **Total Alerts**: ${data.meta.total_alerts}\n` +
+            `- **Duration**: ${data.meta.duration}\n`;
+          
+          github.rest.issues.createComment({
+            issue_number: context.issue.number,
+            owner: context.repo.owner,
+            repo: context.repo.repo,
+            body: comment
+          });
+
+  deploy-report:
+    needs: security-test
+    runs-on: ubuntu-latest
+    if: github.ref == 'refs/heads/main'
+    
+    steps:
+    - uses: actions/checkout@v3
+    
+    - name: Download artifacts
+      uses: actions/download-artifact@v3
+    
+    - name: Deploy to GitHub Pages
+      uses: peaceiris/actions-gh-pages@v3
+      with:
+        github_token: ${{ secrets.GITHUB_TOKEN }}
+        publish_dir: ./outputs
+```
+
+## Jak to działa?
+
+1. **Na każdy push i PR**: Uruchamia testy
+2. **Codziennie o 6:00 UTC**: Automatyczne testy
+3. **Testuje wiele konfiguracji**: Python 3.8-3.11 + gemma3/mistral
+4. **Generuje raporty**: CSV, JSON, HTML
+5. **Komentuje PR**: Wyniki bezpośrednio w PR
+6. **Archiwizuje wyniki**: 30 dni
+7. **Deployuje na GitHub Pages**: Raport dostępny online
+
+## Wymagane secrets (w Settings > Secrets):
+
+Brak wymaganych (używa domyślnego GITHUB_TOKEN)
+
+## Uruchomienie ręczne:
+
+```bash
+# Trigger workflow z konsoli GitHub
+gh workflow run security-test.yml
+```
